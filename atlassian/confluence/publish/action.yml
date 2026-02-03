@@ -1,0 +1,153 @@
+name: "Confluence Publish"
+description: "Publishes Markdown documentation to Confluence using md2conf. Converts Markdown files to Confluence format and uploads them to the specified Confluence space."
+
+inputs:
+  docs_path:
+    description: "Path to the docs directory relative to the workspace root"
+    required: true
+  confluence_username:
+    description: "Confluence/Atlassian username for authentication"
+    required: true
+  confluence_api_key:
+    description: "Confluence/Atlassian API key for authentication"
+    required: true
+  confluence_domain:
+    description: "Confluence domain (e.g., unique-ch.atlassian.net)"
+    required: false
+    default: "unique-ch.atlassian.net"
+  confluence_path:
+    description: "Confluence wiki path"
+    required: false
+    default: "/wiki/"
+  repository_url:
+    description: "GitHub repository URL for the generated-by attribution link. Defaults to the current repository."
+    required: false
+  max_image_width:
+    description: "Maximum width for images in pixels"
+    required: false
+    default: "800"
+  render_mermaid:
+    description: "Enable Mermaid diagram rendering"
+    required: false
+    default: "true"
+  md2conf_image:
+    description: "Docker image for md2conf with optional digest/tag"
+    required: false
+    default: "leventehunyadi/md2conf@sha256:c3e971d77323c96ca4d827a08bd8ed3536e4dd5637c5aa50904178e56bec9b2f"
+  non_default_branch_allowed:
+    description: "Allow publishing from non-default branches. By default, only the default branch is allowed to ensure only reviewed docs are published."
+    required: false
+    default: "false"
+  # Examples:
+  #   generated_by: "Docs from <a href='${DOCS_LINK}'>${REPO_NAME}</a>"  # custom with variables
+  #   generated_by: disabled                                             # completely disabled
+  #   (omit for default behavior)
+  generated_by:
+    description: "Custom HTML for generated-by attribution. Use 'disabled' to omit. Supports ${REPO_NAME}, ${REPO_URL}, ${DOCS_LINK} variables."
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Check branch
+      shell: bash
+      env:
+        NON_DEFAULT_BRANCH_ALLOWED: ${{ inputs.non_default_branch_allowed }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        set -euo pipefail
+
+        if [ "${GITHUB_REF_NAME}" != "${DEFAULT_BRANCH}" ] && [ "${NON_DEFAULT_BRANCH_ALLOWED}" != "true" ]; then
+          echo "Error: Publishing to Confluence is only allowed from the default branch (${DEFAULT_BRANCH}) to ensure only reviewed docs are published."
+          echo "Current branch: ${GITHUB_REF_NAME}"
+          echo ""
+          echo "To override this check, set 'non_default_branch_allowed: true' in the action inputs. Note that you are fully accountable for the published docs in that case including disclosed secrets or confidential information."
+          exit 1
+        fi
+
+        echo "✓ Branch check passed (branch: ${GITHUB_REF_NAME}, default: ${DEFAULT_BRANCH})"
+
+    - name: Validate inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ ! -d "${{ inputs.docs_path }}" ]; then
+          echo "Error: docs_path '${{ inputs.docs_path }}' does not exist or is not a directory"
+          exit 1
+        fi
+
+        echo "✓ Validated docs path: ${{ inputs.docs_path }}"
+
+    - name: Publish docs to Confluence
+      shell: bash
+      env:
+        CONFLUENCE_DOMAIN: ${{ inputs.confluence_domain }}
+        CONFLUENCE_PATH: ${{ inputs.confluence_path }}
+        CONFLUENCE_USER_NAME: ${{ inputs.confluence_username }}
+        CONFLUENCE_API_KEY: ${{ inputs.confluence_api_key }}
+        DOCS_PATH: ${{ inputs.docs_path }}
+        MD2CONF_IMAGE: ${{ inputs.md2conf_image }}
+        MAX_IMAGE_WIDTH: ${{ inputs.max_image_width }}
+        RENDER_MERMAID: ${{ inputs.render_mermaid }}
+        REPOSITORY_URL: ${{ inputs.repository_url }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_SERVER_URL: ${{ github.server_url }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        GENERATED_BY_OVERRIDE: ${{ inputs.generated_by }}
+      run: |
+        set -euo pipefail
+
+        # Compute template variables
+        REPO_NAME="${GITHUB_REPOSITORY##*/}"
+        if [ -n "${REPOSITORY_URL}" ]; then
+          REPO_URL="${REPOSITORY_URL}"
+        else
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+        fi
+        DOCS_LINK="${REPO_URL}/tree/${DEFAULT_BRANCH}/${DOCS_PATH}"
+        export REPO_NAME REPO_URL DOCS_LINK
+
+        echo "Publishing ${REPO_NAME} docs to Confluence"
+        echo "  Domain: ${CONFLUENCE_DOMAIN}"
+        echo "  Docs path: ${DOCS_PATH}"
+        echo ""
+
+        # Build docker arguments
+        DOCKER_ARGS=(
+          --rm
+          -v "${{ github.workspace }}/${DOCS_PATH}:/data"
+          -e "CONFLUENCE_DOMAIN=${CONFLUENCE_DOMAIN}"
+          -e "CONFLUENCE_PATH=${CONFLUENCE_PATH}"
+          -e "CONFLUENCE_USER_NAME=${CONFLUENCE_USER_NAME}"
+          -e "CONFLUENCE_API_KEY=${CONFLUENCE_API_KEY}"
+        )
+
+        # Build md2conf arguments
+        MD2CONF_ARGS=(
+          --max-image-width "${MAX_IMAGE_WIDTH}"
+        )
+
+        # Handle generated-by attribution
+        if [ "${GENERATED_BY_OVERRIDE}" != "disabled" ]; then
+          if [ -n "${GENERATED_BY_OVERRIDE}" ]; then
+            GENERATED_BY=$(echo "${GENERATED_BY_OVERRIDE}" | envsubst '${REPO_NAME} ${REPO_URL} ${DOCS_LINK}')
+          else
+            GENERATED_BY="These pages are auto-generated from the <a href=\"${DOCS_LINK}\">${REPO_NAME} docs</a>."
+          fi
+          MD2CONF_ARGS+=(--generated-by "${GENERATED_BY}")
+        fi
+
+        if [ "${RENDER_MERMAID}" = "true" ]; then
+          MD2CONF_ARGS+=(--render-mermaid)
+        fi
+
+        # Add the working directory as the last argument
+        MD2CONF_ARGS+=(./)
+
+        echo "Running md2conf..."
+        docker run "${DOCKER_ARGS[@]}" "${MD2CONF_IMAGE}" "${MD2CONF_ARGS[@]}"
+
+        echo ""
+        echo "✓ Successfully published ${REPO_NAME} docs to Confluence"
