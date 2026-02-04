@@ -42,8 +42,9 @@ inputs:
   #   generated_by: "Docs from <a href='${DOCS_LINK}'>${REPO_NAME}</a>"  # custom with variables
   #   generated_by: disabled                                             # completely disabled
   #   (omit for default behavior)
+  # Variables can be overridden via env: block in the calling workflow step.
   generated_by:
-    description: "Custom HTML for generated-by attribution. Use 'disabled' to omit. Supports ${REPO_NAME}, ${REPO_URL}, ${DOCS_LINK} variables."
+    description: "Custom HTML for generated-by attribution. Use 'disabled' to omit. Supports ${REPO_NAME}, ${REPO_URL}, ${DOCS_LINK} variables (can be overridden via step env)."
     required: false
 
 runs:
@@ -99,14 +100,14 @@ runs:
       run: |
         set -euo pipefail
 
-        # Compute template variables
-        REPO_NAME="${GITHUB_REPOSITORY##*/}"
+        # Compute template variables (respect pre-existing env vars)
+        REPO_NAME="${REPO_NAME:-${GITHUB_REPOSITORY##*/}}"
         if [ -n "${REPOSITORY_URL}" ]; then
-          REPO_URL="${REPOSITORY_URL}"
+          REPO_URL="${REPO_URL:-${REPOSITORY_URL}}"
         else
-          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          REPO_URL="${REPO_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}}"
         fi
-        DOCS_LINK="${REPO_URL}/tree/${DEFAULT_BRANCH}/${DOCS_PATH}"
+        DOCS_LINK="${DOCS_LINK:-${REPO_URL}/tree/${DEFAULT_BRANCH}/${DOCS_PATH}}"
         export REPO_NAME REPO_URL DOCS_LINK
 
         echo "Publishing ${REPO_NAME} docs to Confluence"
