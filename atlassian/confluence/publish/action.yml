@@ -54,6 +54,10 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Install envsubst
+      run: sudo apt-get update && sudo apt-get install -y gettext-base
+      shell: bash
+      
     - name: Check branch
       shell: bash
       env:
