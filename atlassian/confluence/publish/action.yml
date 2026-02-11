@@ -44,8 +44,12 @@ inputs:
   #   (omit for default behavior)
   # Variables can be overridden via env: block in the calling workflow step.
   generated_by:
-    description: "Custom HTML for generated-by attribution. Use 'disabled' to omit. Supports ${REPO_NAME}, ${REPO_URL}, ${DOCS_LINK} variables (can be overridden via step env)."
+    description: "Custom HTML for generated-by attribution. Use 'disabled' to omit. Supports ${REPO_NAME}, ${REPO_URL}, ${DOCS_LINK}, ${ACTOR}, ${COMMIT_SHA}, ${COMMIT_SHORT_SHA}, ${COMMIT_URL} variables (can be overridden via step env)."
     required: false
+  commit_attribution_enabled:
+    description: "Append commit SHA and actor to the generated-by line (e.g. 'as commit abc1234 from @user'). Only affects the default generated-by; custom overrides can use ${ACTOR}, ${COMMIT_SHA}, ${COMMIT_SHORT_SHA}, ${COMMIT_URL} directly."
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
@@ -81,6 +85,78 @@ runs:
 
         echo "✓ Validated docs path: ${{ inputs.docs_path }}"
 
+    - name: Resolve template variables
+      id: vars
+      shell: bash
+      env:
+        REPOSITORY_URL: ${{ inputs.repository_url }}
+        DOCS_PATH: ${{ inputs.docs_path }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_SERVER_URL: ${{ github.server_url }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_ACTOR: ${{ github.actor }}
+      run: |
+        set -euo pipefail
+
+        # All variables respect pre-existing env overrides
+        REPO_NAME="${REPO_NAME:-${GITHUB_REPOSITORY##*/}}"
+        if [ -n "${REPOSITORY_URL}" ]; then
+          REPO_URL="${REPO_URL:-${REPOSITORY_URL}}"
+        else
+          REPO_URL="${REPO_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}}"
+        fi
+        DOCS_LINK="${DOCS_LINK:-${REPO_URL}/tree/${DEFAULT_BRANCH}/${DOCS_PATH}}"
+        COMMIT_SHA="${COMMIT_SHA:-${GITHUB_SHA}}"
+        COMMIT_SHORT_SHA="${COMMIT_SHORT_SHA:-${COMMIT_SHA:0:7}}"
+        COMMIT_URL="${COMMIT_URL:-${REPO_URL}/commit/${COMMIT_SHA}}"
+        ACTOR="${ACTOR:-${GITHUB_ACTOR}}"
+
+        {
+          echo "repo_name=${REPO_NAME}"
+          echo "repo_url=${REPO_URL}"
+          echo "docs_link=${DOCS_LINK}"
+          echo "commit_sha=${COMMIT_SHA}"
+          echo "commit_short_sha=${COMMIT_SHORT_SHA}"
+          echo "commit_url=${COMMIT_URL}"
+          echo "actor=${ACTOR}"
+        } >> "${GITHUB_OUTPUT}"
+
+    - name: Resolve generated-by attribution
+      id: attribution
+      shell: bash
+      env:
+        GENERATED_BY_OVERRIDE: ${{ inputs.generated_by }}
+        SHOW_COMMIT_ATTRIBUTION: ${{ inputs.commit_attribution_enabled }}
+        REPO_NAME: ${{ steps.vars.outputs.repo_name }}
+        REPO_URL: ${{ steps.vars.outputs.repo_url }}
+        DOCS_LINK: ${{ steps.vars.outputs.docs_link }}
+        COMMIT_SHA: ${{ steps.vars.outputs.commit_sha }}
+        COMMIT_SHORT_SHA: ${{ steps.vars.outputs.commit_short_sha }}
+        COMMIT_URL: ${{ steps.vars.outputs.commit_url }}
+        ACTOR: ${{ steps.vars.outputs.actor }}
+      run: |
+        set -euo pipefail
+
+        if [ "${GENERATED_BY_OVERRIDE}" = "disabled" ]; then
+          echo "generated_by=" >> "${GITHUB_OUTPUT}"
+          echo "✓ Attribution disabled"
+          exit 0
+        fi
+
+        if [ -n "${GENERATED_BY_OVERRIDE}" ]; then
+          GENERATED_BY=$(echo "${GENERATED_BY_OVERRIDE}" | envsubst '${REPO_NAME} ${REPO_URL} ${DOCS_LINK} ${ACTOR} ${COMMIT_SHA} ${COMMIT_SHORT_SHA} ${COMMIT_URL}')
+        else
+          if [ "${SHOW_COMMIT_ATTRIBUTION}" = "true" ]; then
+            GENERATED_BY="These pages are auto-generated from the <a href=\"${DOCS_LINK}\">${REPO_NAME} docs</a> <small>by <code>@${ACTOR}</code> in <a href=\"${COMMIT_URL}\"><code>${COMMIT_SHORT_SHA}</code></a></small>."
+          else
+            GENERATED_BY="These pages are auto-generated from the <a href=\"${DOCS_LINK}\">${REPO_NAME} docs</a>."
+          fi
+        fi
+
+        echo "generated_by=${GENERATED_BY}" >> "${GITHUB_OUTPUT}"
+        echo "✓ Attribution: ${GENERATED_BY}"
+
     - name: Publish docs to Confluence
       shell: bash
       env:
@@ -92,30 +168,16 @@ runs:
         MD2CONF_IMAGE: ${{ inputs.md2conf_image }}
         MAX_IMAGE_WIDTH: ${{ inputs.max_image_width }}
         RENDER_MERMAID: ${{ inputs.render_mermaid }}
-        REPOSITORY_URL: ${{ inputs.repository_url }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
-        GITHUB_SERVER_URL: ${{ github.server_url }}
-        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        GENERATED_BY_OVERRIDE: ${{ inputs.generated_by }}
+        REPO_NAME: ${{ steps.vars.outputs.repo_name }}
+        GENERATED_BY: ${{ steps.attribution.outputs.generated_by }}
       run: |
         set -euo pipefail
-
-        # Compute template variables (respect pre-existing env vars)
-        REPO_NAME="${REPO_NAME:-${GITHUB_REPOSITORY##*/}}"
-        if [ -n "${REPOSITORY_URL}" ]; then
-          REPO_URL="${REPO_URL:-${REPOSITORY_URL}}"
-        else
-          REPO_URL="${REPO_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}}"
-        fi
-        DOCS_LINK="${DOCS_LINK:-${REPO_URL}/tree/${DEFAULT_BRANCH}/${DOCS_PATH}}"
-        export REPO_NAME REPO_URL DOCS_LINK
 
         echo "Publishing ${REPO_NAME} docs to Confluence"
         echo "  Domain: ${CONFLUENCE_DOMAIN}"
         echo "  Docs path: ${DOCS_PATH}"
         echo ""
 
-        # Build docker arguments
         DOCKER_ARGS=(
           --rm
           -v "${{ github.workspace }}/${DOCS_PATH}:/data"
@@ -125,18 +187,11 @@ runs:
           -e "CONFLUENCE_API_KEY=${CONFLUENCE_API_KEY}"
         )
 
-        # Build md2conf arguments
         MD2CONF_ARGS=(
           --max-image-width "${MAX_IMAGE_WIDTH}"
         )
 
-        # Handle generated-by attribution
-        if [ "${GENERATED_BY_OVERRIDE}" != "disabled" ]; then
-          if [ -n "${GENERATED_BY_OVERRIDE}" ]; then
-            GENERATED_BY=$(echo "${GENERATED_BY_OVERRIDE}" | envsubst '${REPO_NAME} ${REPO_URL} ${DOCS_LINK}')
-          else
-            GENERATED_BY="These pages are auto-generated from the <a href=\"${DOCS_LINK}\">${REPO_NAME} docs</a>."
-          fi
+        if [ -n "${GENERATED_BY}" ]; then
           MD2CONF_ARGS+=(--generated-by "${GENERATED_BY}")
         fi
 
@@ -144,7 +199,6 @@ runs:
           MD2CONF_ARGS+=(--render-mermaid)
         fi
 
-        # Add the working directory as the last argument
         MD2CONF_ARGS+=(./)
 
         echo "Running md2conf..."
