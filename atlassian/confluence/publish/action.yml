@@ -3,7 +3,7 @@ description: "Publishes Markdown documentation to Confluence using md2conf. Conv
 
 inputs:
   docs_path:
-    description: "Path to the docs directory relative to the workspace root"
+    description: "Path to a Markdown file or docs directory relative to the workspace root"
     required: true
   confluence_username:
     description: "Confluence/Atlassian username for authentication"
@@ -78,16 +78,29 @@ runs:
         echo "✓ Branch check passed (branch: ${GITHUB_REF_NAME}, default: ${DEFAULT_BRANCH})"
 
     - name: Validate inputs
+      id: validate
       shell: bash
+      env:
+        DOCS_PATH: ${{ inputs.docs_path }}
       run: |
         set -euo pipefail
 
-        if [ ! -d "${{ inputs.docs_path }}" ]; then
-          echo "Error: docs_path '${{ inputs.docs_path }}' does not exist or is not a directory"
+        if [ -d "${DOCS_PATH}" ]; then
+          echo "mode=directory" >> "${GITHUB_OUTPUT}"
+          echo "mount_source=${DOCS_PATH}" >> "${GITHUB_OUTPUT}"
+          echo "md2conf_target=./" >> "${GITHUB_OUTPUT}"
+        elif [ -f "${DOCS_PATH}" ]; then
+          echo "mode=file" >> "${GITHUB_OUTPUT}"
+          PARENT_DIR=$(dirname "${DOCS_PATH}")
+          FILENAME=$(basename "${DOCS_PATH}")
+          echo "mount_source=${PARENT_DIR}" >> "${GITHUB_OUTPUT}"
+          echo "md2conf_target=${FILENAME}" >> "${GITHUB_OUTPUT}"
+        else
+          echo "Error: docs_path '${DOCS_PATH}' does not exist"
           exit 1
         fi
 
-        echo "✓ Validated docs path: ${{ inputs.docs_path }}"
+        echo "✓ Validated docs path: ${DOCS_PATH}"
 
     - name: Resolve template variables
       id: vars
@@ -184,7 +197,7 @@ runs:
 
         DOCKER_ARGS=(
           --rm
-          -v "${{ github.workspace }}/${DOCS_PATH}:/data"
+          -v "${{ github.workspace }}/${{ steps.validate.outputs.mount_source }}:/data"
           -e "CONFLUENCE_DOMAIN=${CONFLUENCE_DOMAIN}"
           -e "CONFLUENCE_PATH=${CONFLUENCE_PATH}"
           -e "CONFLUENCE_USER_NAME=${CONFLUENCE_USER_NAME}"
@@ -203,7 +216,7 @@ runs:
           MD2CONF_ARGS+=(--render-mermaid)
         fi
 
-        MD2CONF_ARGS+=(./)
+        MD2CONF_ARGS+=("${{ steps.validate.outputs.md2conf_target }}")
 
         echo "Running md2conf..."
         docker run "${DOCKER_ARGS[@]}" "${MD2CONF_IMAGE}" "${MD2CONF_ARGS[@]}"
