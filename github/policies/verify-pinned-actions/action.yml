@@ -1,0 +1,75 @@
+name: "Verify Pinned Actions"
+description: "Verifies that all GitHub Actions references are pinned to a full commit SHA for supply-chain security. Reports unpinned actions with suggested fixes."
+
+inputs:
+  scan_paths:
+    description: "Space-separated list of paths to scan for workflow/action files (relative to workspace root)"
+    required: false
+    default: ".github/workflows .github/actions"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Check for unpinned actions
+      shell: bash
+      env:
+        SCAN_PATHS: ${{ inputs.scan_paths }}
+      run: |
+        set -euo pipefail
+
+        SHA_RE='@[0-9a-f]{40}\b'
+        unpinned=0
+
+        existing_paths=()
+        for p in ${SCAN_PATHS}; do
+          if [ -d "$p" ]; then
+            existing_paths+=("$p")
+          else
+            echo "::warning::Scan path '${p}' does not exist, skipping"
+          fi
+        done
+
+        if [ ${#existing_paths[@]} -eq 0 ]; then
+          echo "No scan paths found — nothing to check."
+          exit 0
+        fi
+
+        while IFS= read -r file; do
+          while IFS=: read -r lineno line; do
+            ref=$(echo "$line" | grep -oE 'uses:\s*\S+' | sed 's/uses:[[:space:]]*//' || true)
+            [[ -z "$ref" ]] && continue
+            [[ "$ref" == ./* ]] && continue
+            [[ "$ref" == docker://* ]] && continue
+
+            if echo "$ref" | grep -qE "$SHA_RE"; then
+              continue
+            fi
+
+            unpinned=$((unpinned + 1))
+
+            if [[ "$ref" != *@* ]]; then
+              echo "::error file=${file#./},line=${lineno}::Unpinned action (no version at all): ${ref}"
+              echo "  Pin to a full SHA, e.g.: uses: ${ref}@<commit-sha> # <tag>"
+              continue
+            fi
+
+            repo="${ref%@*}"
+            tag="${ref#*@}"
+            repo_slug=$(echo "$repo" | cut -d/ -f1-2)
+
+            sha=$(git ls-remote "https://github.com/${repo_slug}.git" "refs/tags/${tag}" "refs/tags/${tag}^{}" 2>/dev/null | tail -1 | awk '{print $1}')
+            echo "::error file=${file#./},line=${lineno}::Unpinned action: ${ref}"
+            if [[ -n "$sha" ]]; then
+              echo "  Fix: uses: ${repo}@${sha} # ${tag}"
+            else
+              echo "  Could not resolve tag '${tag}' — pin manually"
+            fi
+          done < <(grep -nE '^\s*-?\s*uses:\s' "$file")
+        done < <(find "${existing_paths[@]}" -type f \( -name '*.yaml' -o -name '*.yml' \) | sort)
+
+        echo ""
+        if [[ $unpinned -gt 0 ]]; then
+          echo "::error::Found ${unpinned} unpinned action(s). Pin them to a full SHA for supply-chain security."
+          exit 1
+        fi
+        echo "All actions are pinned to a SHA."
