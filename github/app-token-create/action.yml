@@ -12,6 +12,10 @@ inputs:
     description: "GitHub repository owner"
     required: false
     default: ${{ github.repository_owner }}
+  installation_id:
+    description: "GitHub App installation ID (skips auto-discovery if set)"
+    required: false
+    default: ""
   repositories:
     description: "Repositories to grant access to (optional)"
     required: false
@@ -53,3 +57,4 @@ runs:
         private-key: ${{ steps.decode-private-key.outputs.decoded_private_key }}
         owner: ${{ inputs.owner }}
         repositories: ${{ inputs.repositories }}
+        installation-id: ${{ inputs.installation_id }}
