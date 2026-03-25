@@ -1,0 +1,55 @@
+name: "Create GitHub App Token"
+description: "Decodes a base64-encoded private key and generates a GitHub App token"
+
+inputs:
+  app_id:
+    description: "GitHub App ID"
+    required: true
+  base64_encoded_private_key:
+    description: "Base64-encoded GitHub App private key"
+    required: true
+  owner:
+    description: "GitHub repository owner"
+    required: false
+    default: ${{ github.repository_owner }}
+  repositories:
+    description: "Repositories to grant access to (optional)"
+    required: false
+    default: ""
+
+outputs:
+  token:
+    description: "GitHub App token"
+    value: ${{ steps.app-token.outputs.token }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Decode base64-encoded private key
+      id: decode-private-key
+      shell: bash
+      env:
+        BASE64_ENCODED_PRIVATE_KEY: ${{ inputs.base64_encoded_private_key }}
+      run: |
+        set -euo pipefail
+        set +x
+
+        BASE64_DECODED_PRIVATE_KEY=$(echo -n "$BASE64_ENCODED_PRIVATE_KEY" | base64 -d)
+
+        {
+          echo "decoded_private_key<<PRIVATE_KEY_EOF"
+          printf '%s\n' "$BASE64_DECODED_PRIVATE_KEY"
+          echo "PRIVATE_KEY_EOF"
+        } >> $GITHUB_OUTPUT 2>/dev/null
+
+        unset BASE64_ENCODED_PRIVATE_KEY
+        unset BASE64_DECODED_PRIVATE_KEY
+
+    - name: Generate GitHub App token
+      id: app-token
+      uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+      with:
+        app-id: ${{ inputs.app_id }}
+        private-key: ${{ steps.decode-private-key.outputs.decoded_private_key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}
