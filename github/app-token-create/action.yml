@@ -31,23 +31,30 @@ runs:
       env:
         BASE64_ENCODED_PRIVATE_KEY: ${{ inputs.base64_encoded_private_key }}
       run: |
+        # Disable command tracing to prevent key from being printed
         set -euo pipefail
         set +x
 
+        # Decode the base64-encoded private key (stored as base64 in AWS
+        # Secrets Manager because its key/value mode does not handle line breaks)
         BASE64_DECODED_PRIVATE_KEY=$(echo -n "$BASE64_ENCODED_PRIVATE_KEY" | base64 -d)
 
-        # ::add-mask:: supports multiline values when newlines are encoded as %0A
-        # (matching the escapeData logic in @actions/core). A single command masks
-        # the entire PEM key atomically, avoiding false-positive masking of
-        # individual lines that happen to appear elsewhere in the logs.
+        # Register the decoded PEM key with the runner's log-redaction filter.
+        # ::add-mask:: is a single-line workflow command, so multiline values
+        # must be encoded: %25 for %, %0D for \r, %0A for \n — matching the
+        # escapeData logic in @actions/core. A single atomic mask avoids
+        # false-positive redaction of short base64 fragments that could match
+        # unrelated log lines.
         echo "::add-mask::$(echo "$BASE64_DECODED_PRIVATE_KEY" | sed ':a;N;$!ba;s/%/%25/g' | sed ':a;N;$!ba;s/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')"
 
+        # Pass decoded key to the next step via GITHUB_OUTPUT (multiline heredoc)
         {
           echo "decoded_private_key<<PRIVATE_KEY_EOF"
           printf '%s\n' "$BASE64_DECODED_PRIVATE_KEY"
           echo "PRIVATE_KEY_EOF"
         } >> $GITHUB_OUTPUT 2>/dev/null
 
+        # Clear variables from shell namespace
         unset BASE64_ENCODED_PRIVATE_KEY
         unset BASE64_DECODED_PRIVATE_KEY
 
