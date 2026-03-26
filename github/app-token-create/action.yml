@@ -36,6 +36,12 @@ runs:
 
         BASE64_DECODED_PRIVATE_KEY=$(echo -n "$BASE64_ENCODED_PRIVATE_KEY" | base64 -d)
 
+        # ::add-mask:: supports multiline values when newlines are encoded as %0A
+        # (matching the escapeData logic in @actions/core). A single command masks
+        # the entire PEM key atomically, avoiding false-positive masking of
+        # individual lines that happen to appear elsewhere in the logs.
+        echo "::add-mask::$(echo "$BASE64_DECODED_PRIVATE_KEY" | sed ':a;N;$!ba;s/%/%25/g' | sed ':a;N;$!ba;s/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')"
+
         {
           echo "decoded_private_key<<PRIVATE_KEY_EOF"
           printf '%s\n' "$BASE64_DECODED_PRIVATE_KEY"
