@@ -42,7 +42,7 @@ runs:
         # ``GET /users/<owner>/installation``, with no hint that the root cause
         # is the workflow's secret wiring.
         if [[ -z "${BASE64_ENCODED_PRIVATE_KEY:-}" ]]; then
-          echo "::error::Input 'base64_encoded_private_key' is empty. Verify the secret is set in the calling repo/environment and the job declares the right 'environment:' block."
+          echo "::error::Input 'base64_encoded_private_key' is empty. Verify the secret is provisioned in the infrastructure repo (Infra-as-Code) for this repo, that it has reconciled into GitHub, and that the calling job declares the right 'environment:' block."
           exit 1
         fi
 
@@ -61,7 +61,7 @@ runs:
         case "$BASE64_DECODED_PRIVATE_KEY" in
           "-----BEGIN "*"PRIVATE KEY-----"*) ;;
           *)
-            echo "::error::Decoded 'base64_encoded_private_key' is not a PEM private key (expected to start with '-----BEGIN ... PRIVATE KEY-----'). Re-upload the App's .pem file as raw base64 (no quotes, no Python repr, no line breaks)."
+            echo "::error::Decoded 'base64_encoded_private_key' is not a PEM private key (expected to start with '-----BEGIN ... PRIVATE KEY-----'). Runbook: re-encode the App's .pem with base64 on the command line and commit the updated value to the infrastructure repo (Infra-as-Code) so it reconciles back into the GitHub secret."
             exit 1
             ;;
         esac
