@@ -35,9 +35,36 @@ runs:
         set -euo pipefail
         set +x
 
+        # Catch empty inputs early. Without this, an unset/empty secret slips
+        # all the way through to ``actions/create-github-app-token`` which then
+        # signs a JWT against an empty key — GitHub's response is the cryptic
+        # ``A JSON web token could not be decoded`` 401 from
+        # ``GET /users/<owner>/installation``, with no hint that the root cause
+        # is the workflow's secret wiring.
+        if [[ -z "${BASE64_ENCODED_PRIVATE_KEY:-}" ]]; then
+          echo "::error::Input 'base64_encoded_private_key' is empty. Verify the secret is set in the calling repo/environment and the job declares the right 'environment:' block."
+          exit 1
+        fi
+
         # Decode the base64-encoded private key (stored as base64 in AWS
         # Secrets Manager because its key/value mode does not handle line breaks)
         BASE64_DECODED_PRIVATE_KEY=$(echo -n "$BASE64_ENCODED_PRIVATE_KEY" | base64 -d)
+
+        # Validate the decoded value is actually a PEM private key. ``base64 -d``
+        # is permissive: an upload mistake (raw PEM stored unencoded, Python
+        # ``b'...'`` repr, double-encoding, CRLF line-folding) often still
+        # decodes without error but yields garbage. That garbage propagates
+        # silently and surfaces much later as ``A JSON web token could not be
+        # decoded`` from GitHub's API. Failing loudly here turns the next bad
+        # upload into a one-line, actionable error instead of a multi-day
+        # forensic exercise across half a dozen workflows.
+        case "$BASE64_DECODED_PRIVATE_KEY" in
+          "-----BEGIN "*"PRIVATE KEY-----"*) ;;
+          *)
+            echo "::error::Decoded 'base64_encoded_private_key' is not a PEM private key (expected to start with '-----BEGIN ... PRIVATE KEY-----'). Re-upload the App's .pem file as raw base64 (no quotes, no Python repr, no line breaks)."
+            exit 1
+            ;;
+        esac
 
         # Register the decoded PEM key with the runner's log-redaction filter.
         # ::add-mask:: is a single-line workflow command, so multiline values
