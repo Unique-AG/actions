@@ -1,0 +1,171 @@
+name: 'Checkout (bundle-cache aware)'
+description: >-
+  Drop-in replacement for actions/checkout. When the runner has a
+  git-bundle-cache configured for this repository (GIT_BUNDLE_CACHE_URL and
+  GIT_BUNDLE_CACHE_REPOSITORIES env vars), seeds the local clone from it, then
+  hands off to actions/checkout, which recognizes the pre-seeded .git
+  directory and only fetches the delta instead of a full clone. Skips seeding
+  for repositories not listed in GIT_BUNDLE_CACHE_REPOSITORIES, when
+  GIT_BUNDLE_CACHE_URL isn't set (the kill switch), or on any bundle-cache
+  failure - actions/checkout re-clones from scratch whenever the seeded
+  directory isn't usable, so this is always safe.
+
+inputs:
+  repository:
+    description: 'Repository name with owner, matches actions/checkout'
+    required: false
+    default: ${{ github.repository }}
+  ref:
+    description: 'Branch, tag or SHA to checkout, matches actions/checkout'
+    required: false
+    default: ''
+  token:
+    description: 'Token used to fetch the repository, matches actions/checkout'
+    required: false
+    default: ${{ github.token }}
+  path:
+    description: 'Relative path under $GITHUB_WORKSPACE to checkout to, matches actions/checkout'
+    required: false
+    default: ''
+  fetch-depth:
+    description: 'Forwarded to actions/checkout, matches actions/checkout; only bounds its own delta fetch on top of the seeded bundle history'
+    required: false
+    default: '1'
+  fetch-tags:
+    description: 'Forwarded to actions/checkout, matches actions/checkout'
+    required: false
+    default: 'false'
+  filter:
+    description: 'Forwarded to actions/checkout, matches actions/checkout'
+    required: false
+    default: ''
+  sparse-checkout:
+    description: 'Newline-separated cone patterns, matches actions/checkout'
+    required: false
+    default: ''
+  sparse-checkout-cone-mode:
+    description: 'Whether sparse-checkout uses cone mode, matches actions/checkout'
+    required: false
+    default: 'true'
+  persist-credentials:
+    description: 'Whether to leave the auth token in the local git config for later steps, matches actions/checkout'
+    required: false
+    default: 'true'
+
+outputs:
+  used-bundle-cache:
+    description: 'true if the local clone was seeded from a git-bundle-cache, false if actions/checkout did a plain full clone'
+    value: ${{ steps.bundle-seed.outputs.succeeded == 'true' && 'true' || 'false' }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Decide whether to attempt the bundle cache
+      id: decide
+      shell: bash
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+        attempt='true'
+        reason=''
+
+        if [ -z "${GIT_BUNDLE_CACHE_URL:-}" ]; then
+          attempt='false'
+          reason='GIT_BUNDLE_CACHE_URL is not set on this runner'
+        elif ! printf '%s\n' "${GIT_BUNDLE_CACHE_REPOSITORIES:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -qxF "$REPOSITORY"; then
+          attempt='false'
+          reason="${REPOSITORY} is not in GIT_BUNDLE_CACHE_REPOSITORIES"
+        fi
+
+        echo "attempt=${attempt}" >> "$GITHUB_OUTPUT"
+        if [ "$attempt" = 'false' ]; then
+          echo "Skipping git-bundle-cache: ${reason}" >&2
+        fi
+
+    - name: Seed local clone from git-bundle-cache
+      id: bundle-seed
+      if: steps.decide.outputs.attempt == 'true'
+      shell: bash
+      continue-on-error: true
+      env:
+        CHECKOUT_REPOSITORY: ${{ inputs.repository }}
+        CHECKOUT_PATH: ${{ inputs.path }}
+      run: |
+        set -uo pipefail
+
+        bundle_url="${GIT_BUNDLE_CACHE_URL:-}"
+        expected_bundle_format_version='1'
+
+        # Subshell with its own `set -e` so any failure aborts the whole attempt
+        # immediately without ever failing this step - actions/checkout re-clones instead.
+        attempt_bundle_seed() (
+          set -euo pipefail
+
+          if [ -z "$bundle_url" ]; then
+            echo "GIT_BUNDLE_CACHE_URL is not set on this runner" >&2
+            exit 1
+          fi
+
+          work_dir="$(mktemp -d)"
+          trap 'rm -rf "$work_dir"' EXIT
+
+          curl --fail --silent --show-error --connect-timeout 3 --max-time 30 --retry 2 --retry-connrefused \
+            -o "${work_dir}/repo.bundle" "${bundle_url}/repo.bundle"
+          curl --fail --silent --show-error --connect-timeout 3 --max-time 5 \
+            -o "${work_dir}/repo.bundle.sha256" "${bundle_url}/repo.bundle.sha256"
+          curl --fail --silent --show-error --connect-timeout 3 --max-time 5 \
+            -o "${work_dir}/repo.bundle.version" "${bundle_url}/repo.bundle.version"
+
+          actual_version="$(tr -d '[:space:]' < "${work_dir}/repo.bundle.version")"
+          if [ "$actual_version" != "$expected_bundle_format_version" ]; then
+            echo "git-bundle-cache format version mismatch: got ${actual_version}, expected ${expected_bundle_format_version}" >&2
+            exit 1
+          fi
+
+          expected_sha="$(tr -d '[:space:]' < "${work_dir}/repo.bundle.sha256")"
+          actual_sha="$(sha256sum "${work_dir}/repo.bundle" | awk '{print $1}')"
+          if [ "$expected_sha" != "$actual_sha" ]; then
+            echo "git-bundle-cache checksum mismatch: got ${actual_sha}, expected ${expected_sha}" >&2
+            exit 1
+          fi
+
+          git bundle verify "${work_dir}/repo.bundle" >/dev/null
+
+          # --no-checkout: actions/checkout does its own checkout next, so populating
+          # the working tree here would only be overwritten.
+          dest="${CHECKOUT_PATH:-.}"
+          git clone --quiet --no-checkout "${work_dir}/repo.bundle" "$dest"
+
+          # actions/checkout only reuses an existing .git dir if remote.origin.url
+          # exactly matches what it would use itself: https://<server>/<owner>/<repo>,
+          # no ".git" suffix, no token (see url-helper.ts#getFetchUrl in actions/checkout).
+          # Getting this wrong just means it re-clones from scratch, not a correctness bug.
+          git -C "$dest" remote set-url origin "https://github.com/${CHECKOUT_REPOSITORY}"
+
+          echo "Seeded ${dest} from git-bundle-cache, handing off to actions/checkout"
+        )
+
+        if attempt_bundle_seed; then
+          echo "succeeded=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "git-bundle-cache seed failed, actions/checkout will do a plain full clone" >&2
+          echo "succeeded=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Checkout via actions/checkout
+      id: checkout
+      # Always runs: reuses the seeded .git dir (fetch just the delta) when
+      # bundle-seed succeeded, otherwise clones from scratch as usual.
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        token: ${{ inputs.token }}
+        path: ${{ inputs.path }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        fetch-tags: ${{ inputs.fetch-tags }}
+        filter: ${{ inputs.filter }}
+        sparse-checkout: ${{ inputs.sparse-checkout }}
+        sparse-checkout-cone-mode: ${{ inputs.sparse-checkout-cone-mode }}
+        persist-credentials: ${{ inputs.persist-credentials }}
