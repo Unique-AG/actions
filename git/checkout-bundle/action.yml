@@ -130,10 +130,10 @@ runs:
             exit 1
           fi
 
-          git bundle verify "${work_dir}/repo.bundle" >/dev/null
-
           # --no-checkout: actions/checkout does its own checkout next, so populating
-          # the working tree here would only be overwritten.
+          # the working tree here would only be overwritten. git clone fails loudly on
+          # a corrupt bundle on its own, so no separate `git bundle verify` is needed -
+          # that command requires an existing repository, which doesn't exist yet here.
           dest="${CHECKOUT_PATH:-.}"
           git clone --quiet --no-checkout "${work_dir}/repo.bundle" "$dest"
 
