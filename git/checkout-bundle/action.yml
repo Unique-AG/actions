@@ -1,14 +1,17 @@
 name: 'Checkout (bundle-cache aware)'
 description: >-
-  Drop-in replacement for actions/checkout. When the runner has a
+  Drop-in replacement for actions/checkout. actions/checkout can already do a
+  shallow fetch of just the requested commit faster than downloading this
+  repository's full-history bundle, so seeding only pays off for full-history
+  checkouts (fetch-depth: 0): in that case, when the runner has a
   git-bundle-cache configured for this repository (GIT_BUNDLE_CACHE_URL and
-  GIT_BUNDLE_CACHE_REPOSITORIES env vars), seeds the local clone from it, then
-  hands off to actions/checkout, which recognizes the pre-seeded .git
+  GIT_BUNDLE_CACHE_REPOSITORIES env vars), this seeds the local clone from it,
+  then hands off to actions/checkout, which recognizes the pre-seeded .git
   directory and only fetches the delta instead of a full clone. Skips seeding
-  for repositories not listed in GIT_BUNDLE_CACHE_REPOSITORIES, when
-  GIT_BUNDLE_CACHE_URL isn't set (the kill switch), or on any bundle-cache
-  failure - actions/checkout re-clones from scratch whenever the seeded
-  directory isn't usable, so this is always safe.
+  for shallow fetches, repositories not listed in GIT_BUNDLE_CACHE_REPOSITORIES,
+  when GIT_BUNDLE_CACHE_URL isn't set (the kill switch), or on any bundle-cache
+  failure or timeout - actions/checkout re-clones from scratch whenever the
+  seeded directory isn't usable, so this is always safe.
 
 inputs:
   repository:
@@ -28,7 +31,7 @@ inputs:
     required: false
     default: ''
   fetch-depth:
-    description: 'Forwarded to actions/checkout, matches actions/checkout; only bounds its own delta fetch on top of the seeded bundle history'
+    description: 'Forwarded to actions/checkout, matches actions/checkout; only fetch-depth: 0 attempts to seed from the bundle cache'
     required: false
     default: '1'
   fetch-tags:
@@ -65,12 +68,19 @@ runs:
       shell: bash
       env:
         REPOSITORY: ${{ inputs.repository }}
+        FETCH_DEPTH: ${{ inputs.fetch-depth }}
       run: |
         set -euo pipefail
         attempt='true'
         reason=''
 
-        if [ -z "${GIT_BUNDLE_CACHE_URL:-}" ]; then
+        # A shallow fetch of one commit from GitHub is faster than downloading this
+        # repository's full-history bundle, so seeding only pays off for full-history
+        # checkouts.
+        if [ "$FETCH_DEPTH" != '0' ]; then
+          attempt='false'
+          reason="fetch-depth=${FETCH_DEPTH} is a shallow fetch, which actions/checkout already does faster than seeding from the bundle cache"
+        elif [ -z "${GIT_BUNDLE_CACHE_URL:-}" ]; then
           attempt='false'
           reason='GIT_BUNDLE_CACHE_URL is not set on this runner'
         elif ! printf '%s\n' "${GIT_BUNDLE_CACHE_REPOSITORIES:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -qxF "$REPOSITORY"; then
@@ -135,7 +145,10 @@ runs:
           # a corrupt bundle on its own, so no separate `git bundle verify` is needed -
           # that command requires an existing repository, which doesn't exist yet here.
           dest="${CHECKOUT_PATH:-.}"
-          git clone --quiet --no-checkout "${work_dir}/repo.bundle" "$dest"
+          # Unlike the curl calls above, git clone has no timeout of its own; bound it
+          # explicitly so a stalled clone falls back to actions/checkout in seconds,
+          # not minutes.
+          timeout 90 git clone --quiet --no-checkout "${work_dir}/repo.bundle" "$dest"
 
           # actions/checkout only reuses an existing .git dir if remote.origin.url
           # exactly matches what it would use itself: https://<server>/<owner>/<repo>,
