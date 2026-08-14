@@ -1,25 +1,25 @@
-name: 'Checkout (bundle-cache aware)'
+name: 'Checkout (repository-cache aware)'
 description: >-
   Drop-in replacement for actions/checkout. actions/checkout can already do a
   shallow fetch of just the requested commit faster than downloading this
   repository's full-history pack, so seeding only pays off for full-history
   checkouts (fetch-depth: 0): in that case, when the runner has a
-  git-bundle-cache configured for this repository (GIT_BUNDLE_CACHE_URL and
-  GIT_BUNDLE_CACHE_REPOSITORIES env vars), this fetches that repository's
+  git-repository-cache configured for this repository (GIT_REPOSITORY_CACHE_URL and
+  GIT_REPOSITORY_CACHE_REPOSITORIES env vars), this fetches that repository's
   manifest, downloads the pack/idx/refs files it lists straight into a fresh
   .git directory (no client-side re-indexing), then hands off to
   actions/checkout, which recognizes the pre-seeded .git directory and only
   fetches the delta instead of a full clone. Skips seeding for shallow
-  fetches, repositories not listed in GIT_BUNDLE_CACHE_REPOSITORIES, when
-  GIT_BUNDLE_CACHE_URL isn't set (the kill switch), or on any bundle-cache
+  fetches, repositories not listed in GIT_REPOSITORY_CACHE_REPOSITORIES, when
+  GIT_REPOSITORY_CACHE_URL isn't set (the kill switch), or on any repository-cache
   failure or timeout - actions/checkout re-clones from scratch whenever the
   seeded directory isn't usable, so this is always safe.
 
-  The bundle-cache authorizes each request against the token used to fetch
+  The repository-cache authorizes each request against the token used to fetch
   it (default: github.token, scoped to this job's own repository). This
   isolation only holds for that default: a caller-supplied broader
   `token` (a custom PAT or GitHub App token with wider access) legitimately
-  unlocks whatever that token can read on the bundle-cache too - the same
+  unlocks whatever that token can read on the repository-cache too - the same
   trust model actions/checkout itself has for its own `token` input, not a
   gap introduced here.
 
@@ -41,7 +41,7 @@ inputs:
     required: false
     default: ''
   fetch-depth:
-    description: 'Forwarded to actions/checkout, matches actions/checkout; only fetch-depth: 0 attempts to seed from the bundle cache'
+    description: 'Forwarded to actions/checkout, matches actions/checkout; only fetch-depth: 0 attempts to seed from the repository cache'
     required: false
     default: '1'
   fetch-tags:
@@ -66,14 +66,14 @@ inputs:
     default: 'true'
 
 outputs:
-  used-bundle-cache:
-    description: 'true if the local clone was seeded from a git-bundle-cache, false if actions/checkout did a plain full clone'
-    value: ${{ steps.bundle-seed.outputs.succeeded == 'true' && 'true' || 'false' }}
+  used-repository-cache:
+    description: 'true if the local clone was seeded from a git-repository-cache, false if actions/checkout did a plain full clone'
+    value: ${{ steps.cache-seed.outputs.succeeded == 'true' && 'true' || 'false' }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Decide whether to attempt the bundle cache
+    - name: Decide whether to attempt the repository cache
       id: decide
       shell: bash
       env:
@@ -89,22 +89,22 @@ runs:
         # checkouts.
         if [ "$FETCH_DEPTH" != '0' ]; then
           attempt='false'
-          reason="fetch-depth=${FETCH_DEPTH} is a shallow fetch, which actions/checkout already does faster than seeding from the bundle cache"
-        elif [ -z "${GIT_BUNDLE_CACHE_URL:-}" ]; then
+          reason="fetch-depth=${FETCH_DEPTH} is a shallow fetch, which actions/checkout already does faster than seeding from the repository cache"
+        elif [ -z "${GIT_REPOSITORY_CACHE_URL:-}" ]; then
           attempt='false'
-          reason='GIT_BUNDLE_CACHE_URL is not set on this runner'
-        elif ! printf '%s\n' "${GIT_BUNDLE_CACHE_REPOSITORIES:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -qxF "$REPOSITORY"; then
+          reason='GIT_REPOSITORY_CACHE_URL is not set on this runner'
+        elif ! printf '%s\n' "${GIT_REPOSITORY_CACHE_REPOSITORIES:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -qxF "$REPOSITORY"; then
           attempt='false'
-          reason="${REPOSITORY} is not in GIT_BUNDLE_CACHE_REPOSITORIES"
+          reason="${REPOSITORY} is not in GIT_REPOSITORY_CACHE_REPOSITORIES"
         fi
 
         echo "attempt=${attempt}" >> "$GITHUB_OUTPUT"
         if [ "$attempt" = 'false' ]; then
-          echo "Skipping git-bundle-cache: ${reason}" >&2
+          echo "Skipping git-repository-cache: ${reason}" >&2
         fi
 
-    - name: Seed local clone from git-bundle-cache
-      id: bundle-seed
+    - name: Seed local clone from git-repository-cache
+      id: cache-seed
       if: steps.decide.outputs.attempt == 'true'
       shell: bash
       continue-on-error: true
@@ -115,24 +115,24 @@ runs:
       run: |
         set -uo pipefail
 
-        cache_url="${GIT_BUNDLE_CACHE_URL:-}"
+        cache_url="${GIT_REPOSITORY_CACHE_URL:-}"
         expected_manifest_format_version='1'
 
         # Subshell with its own `set -e` so any failure aborts the whole attempt
         # immediately without ever failing this step - actions/checkout re-clones instead.
-        attempt_bundle_seed() (
+        attempt_cache_seed() (
           set -euo pipefail
 
           if [ -z "$cache_url" ]; then
-            echo "GIT_BUNDLE_CACHE_URL is not set on this runner" >&2
+            echo "GIT_REPOSITORY_CACHE_URL is not set on this runner" >&2
             exit 1
           fi
           if ! command -v jq >/dev/null 2>&1; then
-            echo "jq is required to parse the git-bundle-cache manifest" >&2
+            echo "jq is required to parse the git-repository-cache manifest" >&2
             exit 1
           fi
 
-          # Forwarded as-is to the bundle-cache's auth check, which forwards it
+          # Forwarded as-is to the repository-cache's auth check, which forwards it
           # as-is again to github.com's own git-smart-HTTP probe - the same
           # Basic-auth-with-token form git itself uses over HTTPS.
           auth_header="Basic $(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 -w0)"
@@ -146,7 +146,7 @@ runs:
 
           manifest_version="$(jq -r '.format_version' "${work_dir}/manifest.json")"
           if [ "$manifest_version" != "$expected_manifest_format_version" ]; then
-            echo "git-bundle-cache manifest format version mismatch: got ${manifest_version}, expected ${expected_manifest_format_version}" >&2
+            echo "git-repository-cache manifest format version mismatch: got ${manifest_version}, expected ${expected_manifest_format_version}" >&2
             exit 1
           fi
 
@@ -156,7 +156,7 @@ runs:
           pack_count="$(jq -r '.packs | length' "${work_dir}/manifest.json")"
 
           if [ -z "$generation" ] || [ "$generation" = 'null' ] || [ "$pack_count" -eq 0 ]; then
-            echo "git-bundle-cache manifest for ${CHECKOUT_REPOSITORY} is malformed or lists no packs" >&2
+            echo "git-repository-cache manifest for ${CHECKOUT_REPOSITORY} is malformed or lists no packs" >&2
             exit 1
           fi
 
@@ -174,7 +174,7 @@ runs:
               -o "$dest_file" "${cache_url}/repos/${CHECKOUT_REPOSITORY}/${generation}/${remote_path}"
             actual_sha="$(sha256sum "$dest_file" | awk '{print $1}')"
             if [ "$expected_sha" != "$actual_sha" ]; then
-              echo "git-bundle-cache checksum mismatch for ${remote_path}: got ${actual_sha}, expected ${expected_sha}" >&2
+              echo "git-repository-cache checksum mismatch for ${remote_path}: got ${actual_sha}, expected ${expected_sha}" >&2
               exit 1
             fi
           )
@@ -214,29 +214,29 @@ runs:
           # Getting this wrong just means it re-clones from scratch, not a correctness bug.
           git -C "$dest" remote add origin "https://github.com/${CHECKOUT_REPOSITORY}"
 
-          echo "Seeded ${dest} from git-bundle-cache generation ${generation} (${pack_count} pack(s)), handing off to actions/checkout"
+          echo "Seeded ${dest} from git-repository-cache generation ${generation} (${pack_count} pack(s)), handing off to actions/checkout"
         )
 
-        # Deliberately not `if attempt_bundle_seed; then`: bash ignores `set -e`
+        # Deliberately not `if attempt_cache_seed; then`: bash ignores `set -e`
         # inside a function/subshell for its *entire* call tree whenever that
         # call is itself the condition of an if/while/&&/|| - so a curl
-        # --fail or checksum-mismatch exit deep inside attempt_bundle_seed
+        # --fail or checksum-mismatch exit deep inside attempt_cache_seed
         # would silently never reach this branch, and every path below would
         # report success regardless. Calling it as a plain statement first and
         # checking $? afterwards avoids that trap entirely.
-        attempt_bundle_seed
+        attempt_cache_seed
         seed_status=$?
         if [ "$seed_status" -eq 0 ]; then
           echo "succeeded=true" >> "$GITHUB_OUTPUT"
         else
-          echo "git-bundle-cache seed failed, actions/checkout will do a plain full clone" >&2
+          echo "git-repository-cache seed failed, actions/checkout will do a plain full clone" >&2
           echo "succeeded=false" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Checkout via actions/checkout
       id: checkout
       # Always runs: reuses the seeded .git dir (fetch just the delta) when
-      # bundle-seed succeeded, otherwise clones from scratch as usual.
+      # cache-seed succeeded, otherwise clones from scratch as usual.
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         repository: ${{ inputs.repository }}
