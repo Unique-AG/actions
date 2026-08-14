@@ -1,19 +1,16 @@
 name: 'Checkout (repository-cache aware)'
 description: >-
-  Drop-in replacement for actions/checkout. actions/checkout can already do a
-  shallow fetch of just the requested commit faster than downloading this
-  repository's full-history pack, so seeding only pays off for full-history
-  checkouts (fetch-depth: 0): in that case, when the runner has a
+  Drop-in replacement for actions/checkout. When the runner has a
   git-repository-cache configured for this repository (GIT_REPOSITORY_CACHE_URL and
   GIT_REPOSITORY_CACHE_REPOSITORIES env vars), this fetches that repository's
   manifest, downloads the pack/idx/refs files it lists straight into a fresh
   .git directory (no client-side re-indexing), then hands off to
-  actions/checkout, which recognizes the pre-seeded .git directory and only
-  fetches the delta instead of a full clone. Skips seeding for shallow
-  fetches, repositories not listed in GIT_REPOSITORY_CACHE_REPOSITORIES, when
-  GIT_REPOSITORY_CACHE_URL isn't set (the kill switch), or on any repository-cache
-  failure or timeout - actions/checkout re-clones from scratch whenever the
-  seeded directory isn't usable, so this is always safe.
+  actions/checkout, which recognizes the pre-seeded .git directory and fetches
+  only the delta on top of it, regardless of the requested fetch-depth. Skips
+  seeding for repositories not listed in GIT_REPOSITORY_CACHE_REPOSITORIES,
+  when GIT_REPOSITORY_CACHE_URL isn't set (the kill switch), or on any
+  repository-cache failure or timeout - actions/checkout re-clones from
+  scratch whenever the seeded directory isn't usable, so this is always safe.
 
   The repository-cache authorizes each request against the token used to fetch
   it (default: github.token, scoped to this job's own repository). This
@@ -41,7 +38,7 @@ inputs:
     required: false
     default: ''
   fetch-depth:
-    description: 'Forwarded to actions/checkout, matches actions/checkout; only fetch-depth: 0 attempts to seed from the repository cache'
+    description: 'Forwarded to actions/checkout, matches actions/checkout'
     required: false
     default: '1'
   fetch-tags:
@@ -78,18 +75,12 @@ runs:
       shell: bash
       env:
         REPOSITORY: ${{ inputs.repository }}
-        FETCH_DEPTH: ${{ inputs.fetch-depth }}
       run: |
         set -euo pipefail
         attempt='true'
         reason=''
 
-        # Seeding only pays off for full-history checkouts; a shallow fetch is
-        # already faster than downloading the full-history pack.
-        if [ "$FETCH_DEPTH" != '0' ]; then
-          attempt='false'
-          reason="fetch-depth=${FETCH_DEPTH} is a shallow fetch, which actions/checkout already does faster than seeding from the repository cache"
-        elif [ -z "${GIT_REPOSITORY_CACHE_URL:-}" ]; then
+        if [ -z "${GIT_REPOSITORY_CACHE_URL:-}" ]; then
           attempt='false'
           reason='GIT_REPOSITORY_CACHE_URL is not set on this runner'
         elif ! printf '%s\n' "${GIT_REPOSITORY_CACHE_REPOSITORIES:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -qxF "$REPOSITORY"; then
