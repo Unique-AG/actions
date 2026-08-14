@@ -217,15 +217,23 @@ runs:
           echo "Seeded ${dest} from git-repository-cache generation ${generation} (${pack_count} pack(s)), handing off to actions/checkout"
         )
 
-        # Deliberately not `if attempt_cache_seed; then`: bash ignores `set -e`
-        # inside a function/subshell for its *entire* call tree whenever that
-        # call is itself the condition of an if/while/&&/|| - so a curl
-        # --fail or checksum-mismatch exit deep inside attempt_cache_seed
-        # would silently never reach this branch, and every path below would
-        # report success regardless. Calling it as a plain statement first and
-        # checking $? afterwards avoids that trap entirely.
+        # Deliberately not `if attempt_cache_seed; then` or `attempt_cache_seed
+        # && ...`: bash ignores `set -e` inside a function/subshell for its
+        # *entire* call tree whenever that call is itself the condition of an
+        # if/while/&&/|| - so a curl --fail or checksum-mismatch exit deep
+        # inside attempt_cache_seed would silently never reach this branch,
+        # and every path below would report success regardless.
+        #
+        # Calling it as a plain statement doesn't fix that on its own either:
+        # `shell: bash` steps already run under GitHub's own `-e` (see
+        # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#exit-codes-and-error-control),
+        # so a bare failing statement aborts this whole step before
+        # `seed_status=$?` runs. Toggle that outer `-e` off for the call so
+        # the failure surfaces as a status code instead of an early exit.
+        set +e
         attempt_cache_seed
         seed_status=$?
+        set -e
         if [ "$seed_status" -eq 0 ]; then
           echo "succeeded=true" >> "$GITHUB_OUTPUT"
         else
