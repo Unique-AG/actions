@@ -84,9 +84,8 @@ runs:
         attempt='true'
         reason=''
 
-        # A shallow fetch of one commit from GitHub is faster than downloading this
-        # repository's full-history pack, so seeding only pays off for full-history
-        # checkouts.
+        # Seeding only pays off for full-history checkouts; a shallow fetch is
+        # already faster than downloading the full-history pack.
         if [ "$FETCH_DEPTH" != '0' ]; then
           attempt='false'
           reason="fetch-depth=${FETCH_DEPTH} is a shallow fetch, which actions/checkout already does faster than seeding from the repository cache"
@@ -118,8 +117,8 @@ runs:
         cache_url="${GIT_REPOSITORY_CACHE_URL:-}"
         expected_manifest_format_version='1'
 
-        # Subshell with its own `set -e` so any failure aborts the whole attempt
-        # immediately without ever failing this step - actions/checkout re-clones instead.
+        # Subshell with its own `set -e`: any failure aborts the whole attempt
+        # without ever failing this step - actions/checkout re-clones instead.
         attempt_cache_seed() (
           set -euo pipefail
 
@@ -132,9 +131,8 @@ runs:
             exit 1
           fi
 
-          # Forwarded as-is to the repository-cache's auth check, which forwards it
-          # as-is again to github.com's own git-smart-HTTP probe - the same
-          # Basic-auth-with-token form git itself uses over HTTPS.
+          # Forwarded to the repository-cache's auth check, which forwards it on to
+          # github.com's own probe - same Basic-auth-with-token form git uses.
           auth_header="Basic $(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 -w0)"
 
           work_dir="$(mktemp -d)"
@@ -160,9 +158,8 @@ runs:
             exit 1
           fi
 
-          # Downloads $2 into $3 and verifies it against the checksum the manifest
-          # already gave us for it - the manifest itself is the single trust anchor,
-          # there is no separate `git bundle verify`-style step for these files.
+          # Downloads $2 into $3 and verifies it against the manifest's checksum -
+          # the manifest is the single trust anchor for these files.
           fetch_and_verify() (
             set -euo pipefail
             remote_path="$1"
@@ -192,8 +189,7 @@ runs:
             i=$((i + 1))
           done
 
-          # actions/checkout does its own checkout next, so this only needs to
-          # populate .git, never the working tree.
+          # Only .git needs seeding; actions/checkout does the working-tree checkout.
           dest="${CHECKOUT_PATH:-.}"
           timeout 10 git init --quiet "$dest"
           mkdir -p "${dest}/.git/objects/pack"
@@ -209,27 +205,19 @@ runs:
           mv "${work_dir}/repo.refs" "${dest}/.git/packed-refs"
 
           # actions/checkout only reuses an existing .git dir if remote.origin.url
-          # exactly matches what it would use itself: https://<server>/<owner>/<repo>,
-          # no ".git" suffix, no token (see url-helper.ts#getFetchUrl in actions/checkout).
-          # Getting this wrong just means it re-clones from scratch, not a correctness bug.
+          # exactly matches what it would set itself (url-helper.ts#getFetchUrl);
+          # getting this wrong just means a re-clone, not a correctness bug.
           git -C "$dest" remote add origin "https://github.com/${CHECKOUT_REPOSITORY}"
 
           echo "Seeded ${dest} from git-repository-cache generation ${generation} (${pack_count} pack(s)), handing off to actions/checkout"
         )
 
-        # Deliberately not `if attempt_cache_seed; then` or `attempt_cache_seed
-        # && ...`: bash ignores `set -e` inside a function/subshell for its
-        # *entire* call tree whenever that call is itself the condition of an
-        # if/while/&&/|| - so a curl --fail or checksum-mismatch exit deep
-        # inside attempt_cache_seed would silently never reach this branch,
-        # and every path below would report success regardless.
-        #
-        # Calling it as a plain statement doesn't fix that on its own either:
-        # `shell: bash` steps already run under GitHub's own `-e` (see
-        # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#exit-codes-and-error-control),
-        # so a bare failing statement aborts this whole step before
-        # `seed_status=$?` runs. Toggle that outer `-e` off for the call so
-        # the failure surfaces as a status code instead of an early exit.
+        # Deliberately not `if attempt_cache_seed; then`: bash ignores `set -e`
+        # for a function's entire call tree when the call is itself an if/&&/||
+        # condition, so a failure deep inside would silently look like success.
+        # Calling it as a bare statement isn't enough either, since GitHub's own
+        # `shell: bash` steps already run under `-e` (would abort before
+        # `seed_status=$?` runs) - toggle that off for the call instead.
         set +e
         attempt_cache_seed
         seed_status=$?
