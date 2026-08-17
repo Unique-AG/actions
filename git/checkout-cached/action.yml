@@ -102,6 +102,7 @@ runs:
         CHECKOUT_REPOSITORY: ${{ inputs.repository }}
         CHECKOUT_PATH: ${{ inputs.path }}
         CHECKOUT_TOKEN: ${{ inputs.token }}
+        CHECKOUT_REF: ${{ inputs.ref }}
       run: |
         set -uo pipefail
 
@@ -199,6 +200,37 @@ runs:
           # exactly matches what it would set itself (url-helper.ts#getFetchUrl);
           # getting this wrong just means a re-clone, not a correctness bug.
           git -C "$dest" remote add origin "https://github.com/${CHECKOUT_REPOSITORY}"
+
+          # `git init` leaves HEAD -> refs/heads/master, which no longer exists
+          # once every refs/heads/* above got remapped to refs/remotes/origin/*
+          # (git-repository-cache/entrypoint-configmap.yaml, to avoid the
+          # branch-delete-flood actions/checkout used to do). An unresolvable
+          # HEAD makes actions/checkout's own `git reset --hard HEAD`
+          # (git-directory-helper.ts) fail, so it discards this entire seed and
+          # re-clones from scratch. Detach HEAD to a real commit so that reset
+          # succeeds; actions/checkout rewrites HEAD to the actual target ref
+          # right after via its own `git checkout -B`, so which commit we pick
+          # here only affects whether that rewrite is a no-op or a second full
+          # checkout, never correctness.
+          candidate_ref="${CHECKOUT_REF:-${GITHUB_REF_NAME:-}}"
+          head_sha=''
+          if [ -n "$candidate_ref" ]; then
+            case "$candidate_ref" in
+              refs/*) ;;
+              *) candidate_ref="refs/heads/${candidate_ref}" ;;
+            esac
+            case "$candidate_ref" in
+              refs/heads/*) lookup="refs/remotes/origin/${candidate_ref#refs/heads/}" ;;
+              *) lookup="$candidate_ref" ;;
+            esac
+            head_sha="$(awk -v r="$lookup" '$2==r{print $1; exit}' "${dest}/.git/packed-refs")"
+          fi
+          if [ -z "$head_sha" ]; then
+            head_sha="$(awk 'NF==2{print $1; exit}' "${dest}/.git/packed-refs")"
+          fi
+          if [ -n "$head_sha" ]; then
+            git -C "$dest" update-ref --no-deref HEAD "$head_sha"
+          fi
 
           echo "Seeded ${dest} from git-repository-cache generation ${generation} (${pack_count} pack(s)), handing off to actions/checkout"
         )
