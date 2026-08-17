@@ -178,6 +178,10 @@ runs:
             idx_sha="$(jq -r ".packs[$i].idx_sha256" "${work_dir}/manifest.json")"
             fetch_and_verify "$pack_path" "$pack_sha" "${work_dir}/${pack_path}" 120
             fetch_and_verify "$idx_path" "$idx_sha" "${work_dir}/${idx_path}" 30
+            # Forces writeback of this pack's dirty page cache before starting the
+            # next download; without it, downloading several packs back-to-back can
+            # accumulate more dirty memory than a MICRO runner's cgroup allows.
+            sync
             i=$((i + 1))
           done
 
