@@ -227,10 +227,24 @@ runs:
               refs/heads/*) lookup="refs/remotes/origin/${candidate_ref#refs/heads/}" ;;
               *) lookup="$candidate_ref" ;;
             esac
-            head_sha="$(awk -v r="$lookup" '$2==r{print $1; exit}' "${dest}/.git/packed-refs")"
+            # An annotated tag's own packed-refs line stores the tag object's OID,
+            # not the commit it points to - `git update-ref HEAD` rejects that. The
+            # peeled commit OID follows on the very next line as `^<sha>` whenever
+            # one exists, so prefer that over the tag object itself. `exit` inside
+            # an awk rule still runs END, so track completion separately to avoid
+            # printing the match twice.
+            head_sha="$(awk -v r="$lookup" '
+              matched { if ($0 ~ /^\^/) { print substr($0, 2) } else { print sha }; matched = 0; done = 1; exit }
+              $2 == r { sha = $1; matched = 1; next }
+              END { if (matched && !done) print sha }
+            ' "${dest}/.git/packed-refs")"
           fi
           if [ -z "$head_sha" ]; then
-            head_sha="$(awk 'NF==2{print $1; exit}' "${dest}/.git/packed-refs")"
+            head_sha="$(awk '
+              matched { if ($0 ~ /^\^/) { print substr($0, 2) } else { print sha }; matched = 0; done = 1; exit }
+              NF == 2 { sha = $1; matched = 1; next }
+              END { if (matched && !done) print sha }
+            ' "${dest}/.git/packed-refs")"
           fi
           if [ -n "$head_sha" ]; then
             git -C "$dest" update-ref --no-deref HEAD "$head_sha"
