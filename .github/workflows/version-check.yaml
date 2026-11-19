@@ -6,8 +6,7 @@ on:
       - main
 
 permissions:
-  contents: read # to read the repository and its releases
-  pull-requests: read # to list the changed files
+  contents: read # to read the repository
 
 jobs:
   version-check:
@@ -16,15 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2 # the merge commit and its base parent
           persist-credentials: false
 
       - name: Require a new version for every changed action
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only > files.txt
+          # --no-renames lists both sides of a move, so the source action counts too
+          git diff --name-only --no-renames HEAD^1 HEAD > files.txt
 
           # map each changed file to the nearest folder holding an action; removed actions drop out
           while read -r path; do
@@ -35,17 +33,24 @@ jobs:
 
           failed=0
           while read -r dir; do
-            if [ ! -f "$dir/version.yaml" ]; then
+            file="$dir/version.yaml"
+            if [ ! -f "$file" ]; then
               echo "::error::$dir has no version.yaml."
               failed=1
               continue
             fi
-            tag="$(yq '.name' "$dir/version.yaml")@$(yq '.version' "$dir/version.yaml")"
-            if gh release view "$tag" >/dev/null 2>&1; then
-              echo "::error file=$dir/version.yaml::$tag is already released, bump version and add changes."
+            base=$(git show "HEAD^1:$file" 2>/dev/null || true)
+            if [ "$(yq '.changes | length' "$file")" -eq 0 ]; then
+              echo "::error file=$file::List the changes of this version."
+              failed=1
+            elif [ -n "$base" ] && [ "$(yq '.version' <<< "$base")" = "$(yq '.version' "$file")" ]; then
+              echo "::error file=$file::Bump version for the changes to $dir."
+              failed=1
+            elif [ -n "$base" ] && [ "$(yq -o json '.changes' <<< "$base")" = "$(yq -o json '.changes' "$file")" ]; then
+              echo "::error file=$file::Replace changes with the changes of this version."
               failed=1
             else
-              echo "$tag is new."
+              echo "$dir is at a new version."
             fi
           done < changed.txt
           exit "$failed"

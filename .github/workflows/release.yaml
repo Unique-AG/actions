@@ -11,10 +11,6 @@ on:
 permissions:
   contents: read # to read the repository
 
-concurrency:
-  group: release # overlapping runs would race to create the same release
-  cancel-in-progress: false
-
 jobs:
   release:
     permissions:
@@ -36,11 +32,14 @@ jobs:
             if gh release view "$tag" >/dev/null 2>&1; then
               continue
             fi
-            # --target does not move an existing tag, so a stray tag would release old code
-            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
-              echo "::error file=$file::Tag $tag exists without a release, delete it or bump the version."
+            # --target does not move an existing tag, so a tag elsewhere would release other code
+            tag_sha=$(git ls-remote origin "refs/tags/$tag" | cut -f1)
+            if [ -n "$tag_sha" ] && [ "$tag_sha" != "$GITHUB_SHA" ]; then
+              echo "::error file=$file::Tag $tag points to $tag_sha without a release, delete it or bump the version."
               exit 1
             fi
             yq '.changes[] | "- **" + .kind + "**: " + .description' "$file" > notes.md
-            gh release create "$tag" --title "$tag" --notes-file notes.md --target "$GITHUB_SHA"
+            # a parallel run may have released the same tag in the meantime
+            gh release create "$tag" --title "$tag" --notes-file notes.md --target "$GITHUB_SHA" ||
+              gh release view "$tag" >/dev/null
           done
