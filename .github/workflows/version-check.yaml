@@ -39,8 +39,9 @@ jobs:
               failed=1
               continue
             fi
-            if ! yq -e '.name and .version and (.changes | length > 0)' "$file" >/dev/null; then
-              echo "::error file=$file::Set name, version and at least one change."
+            # the tag format <name>@<major>.<minor>.<patch> is what Renovate parses in consumers
+            if ! yq -e '(.name | test("^[a-z0-9-]+$")) and (.version | test("^[0-9]+\.[0-9]+\.[0-9]+$")) and (.changes | length > 0)' "$file" >/dev/null; then
+              echo "::error file=$file::Set name (a-z, 0-9, -), version (X.Y.Z) and at least one change."
               failed=1
               continue
             fi
