@@ -1,0 +1,21 @@
+name: Release Please
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read # to read the repository
+
+jobs:
+  release-please:
+    permissions:
+      contents: write # to create the tags and the releases
+      issues: write # to set the release labels
+      pull-requests: write # to open and update the release pull request
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
