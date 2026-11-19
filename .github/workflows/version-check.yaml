@@ -39,9 +39,16 @@ jobs:
               failed=1
               continue
             fi
+            if ! yq -e '.name and .version and (.changes | length > 0)' "$file" >/dev/null; then
+              echo "::error file=$file::Set name, version and at least one change."
+              failed=1
+              continue
+            fi
+            tag="$(yq '.name' "$file")@$(yq '.version' "$file")"
             base=$(git show "HEAD^1:$file" 2>/dev/null || true)
-            if [ "$(yq '.changes | length' "$file")" -eq 0 ]; then
-              echo "::error file=$file::List the changes of this version."
+            released=$(git ls-remote origin "refs/tags/$tag") # a plain assignment, so a failed lookup stops the step
+            if [ -n "$released" ]; then
+              echo "::error file=$file::$tag is already released, bump version."
               failed=1
             elif [ -n "$base" ] && [ "$(yq '.version' <<< "$base")" = "$(yq '.version' "$file")" ]; then
               echo "::error file=$file::Bump version for the changes to $dir."
