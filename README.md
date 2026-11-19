@@ -2,8 +2,8 @@
 A repository with reusable GitHub Actions workflows for Unique AG 🪃.
 
 ## Versioning
-[release-please](https://github.com/googleapis/release-please) cuts releases from conventional commits and tags them repo-wide as `vX.Y.Z`. Pin a release by SHA:
+Each action has a `version.yaml`. Bump `version` and list the `changes` in the same PR; on merge to main, the release workflow tags and releases it as `<name>@<version>`. Pin a release by SHA:
 
 ```yaml
-uses: unique-ag/actions/github/app-token-create@<sha> # vX.Y.Z
+uses: unique-ag/actions/github/app-token-create@<sha> # app-token-create@1.0.0
 ```

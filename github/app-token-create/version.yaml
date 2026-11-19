@@ -1,0 +1,5 @@
+name: app-token-create
+version: 1.0.0
+changes:
+  - kind: added
+    description: First versioned release.

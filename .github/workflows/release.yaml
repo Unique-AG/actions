@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "**/version.yaml"
+
+permissions:
+  contents: read # to read the repository
+
+jobs:
+  release:
+    permissions:
+      contents: write # to create the tags and the releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Release every action version not yet released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find . -name version.yaml -not -path './.git/*' | sort | while read -r file; do
+            tag="$(yq '.name' "$file")@$(yq '.version' "$file")"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              continue
+            fi
+            yq '.changes[] | "- **" + .kind + "**: " + .description' "$file" > notes.md
+            gh release create "$tag" --title "$tag" --notes-file notes.md --target "$GITHUB_SHA"
+          done
