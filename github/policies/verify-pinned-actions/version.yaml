@@ -1,0 +1,5 @@
+name: verify-pinned-actions
+version: 1.0.0
+changes:
+  - kind: added
+    description: First versioned release.
